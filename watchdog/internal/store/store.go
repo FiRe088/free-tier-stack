@@ -89,3 +89,77 @@ func (s *Store) InsertLogEventsBatch(ctx context.Context, events []LogEvent) err
 
 	return nil
 }
+
+// AlertsRecorded reports how many new alert rows were inserted.
+type AnomalyResult struct {
+	AlertsRecorded int
+}
+
+// DetectAndRecordErrorSpikes scans log_events for 1-minute windows per
+// source where the ERROR count meets or exceeds threshold, and records
+// one alert row per such window. Windows that already have an alert
+// (from a previous run) are silently skipped via ON CONFLICT DO NOTHING,
+// relying on the log_alerts_source_window_unique constraint rather than
+// a separate existence check — this avoids a check-then-insert race
+// under concurrent access.
+//
+// This is a fixed 1-minute tumbling window, not a sliding window — a
+// known simplification. A burst of errors spanning a window boundary
+// (e.g. 30 errors in the last 10s of one minute, 30 more in the first
+// 10s of the next) would be split across two windows and might not
+// trigger either one individually. A sliding-window implementation is
+// a legitimate Phase 4+ improvement, not done here.
+func (s *Store) DetectAndRecordErrorSpikes(ctx context.Context, threshold int) (AnomalyResult, error) {
+	const selectQ = `
+		SELECT source, date_trunc('minute', occurred_at) AS window_start, COUNT(*) AS error_count
+		FROM log_events
+		WHERE level = 'ERROR'
+		GROUP BY source, window_start
+		HAVING COUNT(*) >= $1
+	`
+
+	rows, err := s.pool.Query(ctx, selectQ, threshold)
+	if err != nil {
+		return AnomalyResult{}, fmt.Errorf("store: detecting error spikes: %w", err)
+	}
+	defer rows.Close()
+
+	type window struct {
+		source      string
+		windowStart time.Time
+		errorCount  int
+	}
+	var windows []window
+	for rows.Next() {
+		var w window
+		if err := rows.Scan(&w.source, &w.windowStart, &w.errorCount); err != nil {
+			return AnomalyResult{}, fmt.Errorf("store: scanning error spike row: %w", err)
+		}
+		windows = append(windows, w)
+	}
+	if err := rows.Err(); err != nil {
+		return AnomalyResult{}, fmt.Errorf("store: iterating error spike rows: %w", err)
+	}
+
+	const insertQ = `
+		INSERT INTO log_alerts (source, reason, window_start, window_end)
+		VALUES ($1, $2, $3, $4)
+		ON CONFLICT (source, window_start) DO NOTHING
+	`
+
+	recorded := 0
+	for _, w := range windows {
+		reason := fmt.Sprintf("error rate spike: %d errors in 1 minute (threshold: %d)", w.errorCount, threshold)
+		windowEnd := w.windowStart.Add(time.Minute)
+
+		tag, err := s.pool.Exec(ctx, insertQ, w.source, reason, w.windowStart, windowEnd)
+		if err != nil {
+			return AnomalyResult{}, fmt.Errorf("store: inserting alert for %s: %w", w.source, err)
+		}
+		if tag.RowsAffected() > 0 {
+			recorded++
+		}
+	}
+
+	return AnomalyResult{AlertsRecorded: recorded}, nil
+}

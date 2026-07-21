@@ -2,20 +2,21 @@ package tailer
 
 import (
 	"bufio"
+	"context"
 	"fmt"
 	"os"
 )
 
 // ReadLines reads a file line by line and calls handleLine for each one.
-// Phase 1: reads the whole file once and returns — no live-follow, no
-// tracking of read position. Phase 2 will replace this with a real
-// tail -f style follower that watches for new lines being appended.
+// Phase 1/2: reads the whole file once and returns — no live-follow.
 //
-// handleLine errors are not fatal — a single malformed line should not
-// stop processing of the rest of the file. Callers are expected to log
-// the error and continue, which is why this function returns a slice
-// of errors rather than stopping on the first one.
-func ReadLines(path string, handleLine func(line string) error) []error {
+// Phase 3 adds ctx cancellation: if ctx is cancelled mid-file (e.g. the
+// process received SIGTERM), ReadLines stops sending new lines and
+// returns immediately rather than finishing the file. This is what makes
+// graceful shutdown meaningful — without it, a SIGTERM during a large
+// file would either be ignored until the file finishes, or kill the
+// process mid-write with no chance to flush pending batches.
+func ReadLines(ctx context.Context, path string, handleLine func(line string) error) []error {
 	var errs []error
 
 	f, err := os.Open(path)
@@ -27,6 +28,13 @@ func ReadLines(path string, handleLine func(line string) error) []error {
 	scanner := bufio.NewScanner(f)
 	lineNum := 0
 	for scanner.Scan() {
+		select {
+		case <-ctx.Done():
+			errs = append(errs, fmt.Errorf("tailer: %s: cancelled after %d lines: %w", path, lineNum, ctx.Err()))
+			return errs
+		default:
+		}
+
 		lineNum++
 		line := scanner.Text()
 		if line == "" {
