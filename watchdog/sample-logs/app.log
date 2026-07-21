@@ -1,0 +1,10 @@
+2026-07-21T22:14:15Z INFO service started successfully
+2026-07-21T22:14:16Z INFO listening on port 8080
+2026-07-21T22:14:20Z WARN connection pool nearing capacity
+2026-07-21T22:14:25Z ERROR failed to connect to upstream database
+this line is intentionally malformed and should fail to parse
+2026-07-21T22:14:30Z DEBUG cache hit ratio 0.87
+2026-07-21T22:14:35Z ERROR request timeout after 30s
+2026-07-21T22:14:40Z INFO health check passed
+2026-07-21T99:99:99Z ERROR this has a broken timestamp
+2026-07-21T22:14:45Z CRITICAL unsupported level should also fail
