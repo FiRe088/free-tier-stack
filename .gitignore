@@ -21,3 +21,5 @@ Thumbs.db
 
 # Generated test data
 watchdog/sample-logs/flood.log
+watchdog/watchdog-bin
+watchdog/watchdog-bin
