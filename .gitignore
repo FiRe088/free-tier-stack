@@ -1,0 +1,20 @@
+# Go
+watchdog/cmd/watchdog/watchdog
+pulse/cmd/pulse/pulse
+*.exe
+*.test
+*.out
+
+# Env / secrets
+.env
+
+# Docker
+db-data/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editor
+.vscode/
+.idea/

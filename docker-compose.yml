@@ -1,0 +1,87 @@
+version: "3.9"
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: ftstack-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ftstack
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-changeme_local_dev}
+      POSTGRES_DB: ftstack
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./db/init:/docker-entrypoint-initdb.d:ro
+    ports:
+      - "127.0.0.1:5432:5432"
+    mem_limit: 300m
+    memswap_limit: 300m
+    cpus: 0.4
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ftstack -d ftstack"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  watchdog:
+    build:
+      context: ./watchdog
+    container_name: ftstack-watchdog
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgres://ftstack:${POSTGRES_PASSWORD:-changeme_local_dev}@postgres:5432/ftstack?sslmode=disable
+      LOG_SOURCE_DIR: /var/log/watched
+      WORKER_POOL_SIZE: 4
+      BATCH_SIZE: 100
+      BATCH_INTERVAL_MS: 500
+    volumes:
+      - ./watchdog/sample-logs:/var/log/watched:ro
+    mem_limit: 128m
+    memswap_limit: 128m
+    cpus: 0.2
+
+  pulse:
+    build:
+      context: ./pulse
+    container_name: ftstack-pulse
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgres://ftstack:${POSTGRES_PASSWORD:-changeme_local_dev}@postgres:5432/ftstack?sslmode=disable
+      TARGETS_FILE: /app/targets.yml
+      CHECK_TIMEOUT_MS: 3000
+    volumes:
+      - ./pulse/targets.yml:/app/targets.yml:ro
+    ports:
+      - "8080:8080"
+    mem_limit: 128m
+    memswap_limit: 128m
+    cpus: 0.2
+
+  grafana:
+    image: grafana/grafana-oss:11.2.0
+    container_name: ftstack-grafana
+    restart: "no"
+    profiles: ["dashboard"]
+    depends_on:
+      - postgres
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+    ports:
+      - "3000:3000"
+    mem_limit: 200m
+    memswap_limit: 200m
+    cpus: 0.3
+
+volumes:
+  pgdata:
+  grafana-data:
