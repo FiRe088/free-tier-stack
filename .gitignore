@@ -18,3 +18,6 @@ Thumbs.db
 # Editor
 .vscode/
 .idea/
+
+# Generated test data
+watchdog/sample-logs/flood.log
