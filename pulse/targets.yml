@@ -1,0 +1,7 @@
+targets:
+  - name: local-postgres-healthcheck
+    url: http://localhost:8080/healthz
+  - name: example-website
+    url: https://example.com
+  - name: intentionally-broken
+    url: http://localhost:9999/does-not-exist
