@@ -27,6 +27,17 @@ func main() {
 	batchIntervalMs := envIntDefault("BATCH_INTERVAL_MS", 500)
 	errorThreshold := envIntDefault("ERROR_SPIKE_THRESHOLD", 5)
 
+	// Phase 4b: choose insert strategy for A/B benchmarking.
+	//   batch (default) -> InsertLogEventsBatch, pgx extended-query batch
+	//   copy            -> InsertLogEventsCopy, Postgres COPY protocol
+	insertStrategy := os.Getenv("INSERT_STRATEGY")
+	if insertStrategy == "" {
+		insertStrategy = "batch"
+	}
+	if insertStrategy != "batch" && insertStrategy != "copy" {
+		log.Fatalf("watchdog: invalid INSERT_STRATEGY %q, must be 'batch' or 'copy'", insertStrategy)
+	}
+
 	if profilePath := os.Getenv("CPU_PROFILE"); profilePath != "" {
 		f, err := os.Create(profilePath)
 		if err != nil {
@@ -40,12 +51,6 @@ func main() {
 		log.Printf("watchdog: CPU profiling enabled, writing to %s", profilePath)
 	}
 
-	// Phase 4: optional heap profiling. Set MEM_PROFILE=./mem.prof to
-	// capture a heap snapshot right before exit. runtime.GC() is called
-	// first to force a collection so the snapshot reflects live objects
-	// at that moment rather than whatever garbage happened to be
-	// uncollected yet — without this, the profile is noisy and less
-	// useful for finding real allocation hotspots.
 	memProfilePath := os.Getenv("MEM_PROFILE")
 	if memProfilePath != "" {
 		defer func() {
@@ -76,8 +81,8 @@ func main() {
 	}
 	defer st.Close()
 
-	log.Printf("watchdog: connected to database (workers=%d batch_size=%d batch_interval=%dms error_threshold=%d)",
-		workerPoolSize, batchSize, batchIntervalMs, errorThreshold)
+	log.Printf("watchdog: connected to database (workers=%d batch_size=%d batch_interval=%dms error_threshold=%d insert_strategy=%s)",
+		workerPoolSize, batchSize, batchIntervalMs, errorThreshold, insertStrategy)
 
 	type rawLine struct {
 		source string
@@ -104,9 +109,17 @@ func main() {
 					return
 				}
 				bctx, bcancel := context.WithTimeout(context.Background(), 5*time.Second)
-				if err := st.InsertLogEventsBatch(bctx, batch); err != nil {
-					log.Printf("watchdog: worker %d: batch insert failed (%d events lost): %v",
-						workerID, len(batch), err)
+
+				var insertErr error
+				if insertStrategy == "copy" {
+					insertErr = st.InsertLogEventsCopy(bctx, batch)
+				} else {
+					insertErr = st.InsertLogEventsBatch(bctx, batch)
+				}
+
+				if insertErr != nil {
+					log.Printf("watchdog: worker %d: %s insert failed (%d events lost): %v",
+						workerID, insertStrategy, len(batch), insertErr)
 					atomic.AddInt64(&totalErrors, int64(len(batch)))
 				} else {
 					atomic.AddInt64(&totalProcessed, int64(len(batch)))

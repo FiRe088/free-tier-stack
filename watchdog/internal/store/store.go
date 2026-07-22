@@ -163,3 +163,60 @@ func (s *Store) DetectAndRecordErrorSpikes(ctx context.Context, threshold int) (
 
 	return AnomalyResult{AlertsRecorded: recorded}, nil
 }
+
+// logEventCopySource implements pgx.CopyFromSource, feeding rows to
+// CopyFrom one at a time without pre-building a full [][]any slice.
+type logEventCopySource struct {
+	events []LogEvent
+	idx    int
+}
+
+func (s *logEventCopySource) Next() bool {
+	s.idx++
+	return s.idx <= len(s.events)
+}
+
+func (s *logEventCopySource) Values() ([]any, error) {
+	e := s.events[s.idx-1]
+	return []any{e.Source, e.Level, e.Message, e.OccurredAt}, nil
+}
+
+func (s *logEventCopySource) Err() error {
+	return nil
+}
+
+// InsertLogEventsCopy writes multiple events using Postgres's binary COPY
+// protocol via pgx.CopyFrom, instead of the extended-query batch protocol
+// used by InsertLogEventsBatch.
+//
+// Phase 4 profiling (mem.prof, alloc_objects) showed InsertLogEventsBatch
+// itself was the largest single allocator in the entire program (29.39%
+// flat, 86.41% cumulative including the pgx batch machinery it triggers):
+// building a pgx.Batch with N individually-Queue'd statements carries real
+// per-row bookkeeping overhead (pipelineState tracking, command tag
+// allocation, a container/list per in-flight batch). COPY avoids per-row
+// query planning and pipeline bookkeeping entirely — rows stream through
+// a single binary protocol message rather than N queued statements.
+//
+// Tradeoff: COPY does not support ON CONFLICT, so this cannot be used for
+// InsertLogEventsBatch's use case if conflict handling were ever needed
+// (it isn't currently — log_events has no unique constraint). If that
+// changes, this method would need reconsidering, not just reuse.
+func (s *Store) InsertLogEventsCopy(ctx context.Context, events []LogEvent) error {
+	if len(events) == 0 {
+		return nil
+	}
+
+	src := &logEventCopySource{events: events}
+
+	_, err := s.pool.CopyFrom(
+		ctx,
+		pgx.Identifier{"log_events"},
+		[]string{"source", "level", "message", "occurred_at"},
+		src,
+	)
+	if err != nil {
+		return fmt.Errorf("store: copy insert: %w", err)
+	}
+	return nil
+}
