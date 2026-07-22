@@ -31,3 +31,26 @@ just log output. The state machine was working correctly the whole time
 (uptime_alert_state had the right data); only the alerting/logging layer
 on top of it was silently wrong. Checking one layer (logs) and assuming
 the layer underneath matches is how this kind of bug hides.
+
+## 2026-07-22 Shutdown fabricated false-failure records for healthy targets
+**Problem:** Load-testing Pulse against 100 mock targets and killing it
+mid-run (via timeout) revealed that every shutdown produced a burst of
+"context canceled" failures in uptime_checks for targets that were
+actually healthy — confirmed via query showing NULL status_code entries
+for ok-N and slow-N targets (categories that never legitimately fail)
+landing in a single-second window matching shutdown time exactly.
+**Root cause:** Each check's context was derived from runCtx
+(context.WithTimeout(runCtx, ...)), the same context cancelled by
+SIGTERM/SIGINT. The moment shutdown fired, every in-flight HTTP request
+was aborted mid-request and its result recorded as a real failure,
+indistinguishable in the database from a genuine outage.
+**Fix:** Changed the per-check context to derive from
+context.Background() instead of runCtx, so in-flight checks run to
+their own natural timeout regardless of shutdown signals. Verified by
+re-running the same load test and confirming zero false-failure rows
+where previously there were ~100.
+**Lesson:** For a service whose entire job is producing a record of
+truth (uptime status), a shutdown mechanism that corrupts that record
+is worse than one that shuts down slowly. Correctness under shutdown
+needs the same scrutiny as correctness under load — "does it stop
+cleanly" is not the same question as "does it stop truthfully."
