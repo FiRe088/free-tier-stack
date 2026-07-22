@@ -7,21 +7,15 @@ pulse/cmd/pulse/pulse
 
 # Env / secrets
 .env
-
 # Docker
 db-data/
-
 # OS
 .DS_Store
 Thumbs.db
-
 # Editor
 .vscode/
 .idea/
-
 # Generated test data
 watchdog/sample-logs/flood.log
 watchdog/watchdog-bin
-watchdog/watchdog-bin
-watchdog/cpu.prof
-watchdog/mem.prof
+watchdog/*.prof
