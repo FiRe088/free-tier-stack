@@ -23,3 +23,5 @@ Thumbs.db
 watchdog/sample-logs/flood.log
 watchdog/watchdog-bin
 watchdog/watchdog-bin
+watchdog/cpu.prof
+watchdog/mem.prof
