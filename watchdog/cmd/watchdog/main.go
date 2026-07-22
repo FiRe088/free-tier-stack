@@ -6,6 +6,8 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime"
+	"runtime/pprof"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -25,12 +27,43 @@ func main() {
 	batchIntervalMs := envIntDefault("BATCH_INTERVAL_MS", 500)
 	errorThreshold := envIntDefault("ERROR_SPIKE_THRESHOLD", 5)
 
-	// runCtx is cancelled on SIGTERM/SIGINT. This is what makes shutdown
-	// "graceful": the tailer stops reading new lines, workers finish
-	// flushing whatever they're currently holding, and main exits cleanly
-	// instead of being killed mid-write. connCtx is separate and NOT tied
-	// to the signal, because the final anomaly-detection query and the
-	// last batch flush need to complete even after shutdown begins.
+	if profilePath := os.Getenv("CPU_PROFILE"); profilePath != "" {
+		f, err := os.Create(profilePath)
+		if err != nil {
+			log.Fatalf("watchdog: could not create CPU profile file: %v", err)
+		}
+		defer f.Close()
+		if err := pprof.StartCPUProfile(f); err != nil {
+			log.Fatalf("watchdog: could not start CPU profile: %v", err)
+		}
+		defer pprof.StopCPUProfile()
+		log.Printf("watchdog: CPU profiling enabled, writing to %s", profilePath)
+	}
+
+	// Phase 4: optional heap profiling. Set MEM_PROFILE=./mem.prof to
+	// capture a heap snapshot right before exit. runtime.GC() is called
+	// first to force a collection so the snapshot reflects live objects
+	// at that moment rather than whatever garbage happened to be
+	// uncollected yet — without this, the profile is noisy and less
+	// useful for finding real allocation hotspots.
+	memProfilePath := os.Getenv("MEM_PROFILE")
+	if memProfilePath != "" {
+		defer func() {
+			f, err := os.Create(memProfilePath)
+			if err != nil {
+				log.Printf("watchdog: could not create memory profile file: %v", err)
+				return
+			}
+			defer f.Close()
+			runtime.GC()
+			if err := pprof.WriteHeapProfile(f); err != nil {
+				log.Printf("watchdog: could not write memory profile: %v", err)
+				return
+			}
+			log.Printf("watchdog: memory profile written to %s", memProfilePath)
+		}()
+	}
+
 	runCtx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
 
@@ -70,10 +103,6 @@ func main() {
 				if len(batch) == 0 {
 					return
 				}
-				// Deliberately NOT tied to runCtx — a flush in progress
-				// when SIGTERM arrives should still be allowed to finish
-				// (up to 5s), otherwise graceful shutdown would drop
-				// exactly the data it's supposed to protect.
 				bctx, bcancel := context.WithTimeout(context.Background(), 5*time.Second)
 				if err := st.InsertLogEventsBatch(bctx, batch); err != nil {
 					log.Printf("watchdog: worker %d: batch insert failed (%d events lost): %v",
@@ -146,10 +175,6 @@ readLoop:
 	log.Printf("watchdog: ingestion done. processed=%d errors=%d",
 		atomic.LoadInt64(&totalProcessed), atomic.LoadInt64(&totalErrors))
 
-	// Anomaly detection runs after ingestion completes, using its own
-	// context independent of runCtx, so a shutdown signal during ingestion
-	// doesn't also cancel this — we still want to know about error spikes
-	// in whatever data did make it in before shutdown.
 	anomalyCtx, anomalyCancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer anomalyCancel()
 
