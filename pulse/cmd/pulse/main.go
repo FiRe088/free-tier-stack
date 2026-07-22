@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"runtime"
+	"runtime/pprof"
 	"strconv"
 	"sync"
 	"syscall"
@@ -24,6 +26,39 @@ func main() {
 
 	runCtx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
+
+	// Phase 4: optional profiling. Unlike Watchdog (a batch job), Pulse is
+	// long-running — CPU profiling runs for the whole process lifetime and
+	// stops on shutdown; memory profiling snapshots right before exit.
+	if profilePath := os.Getenv("CPU_PROFILE"); profilePath != "" {
+		f, err := os.Create(profilePath)
+		if err != nil {
+			log.Fatalf("pulse: could not create CPU profile file: %v", err)
+		}
+		defer f.Close()
+		if err := pprof.StartCPUProfile(f); err != nil {
+			log.Fatalf("pulse: could not start CPU profile: %v", err)
+		}
+		defer pprof.StopCPUProfile()
+		log.Printf("pulse: CPU profiling enabled, writing to %s", profilePath)
+	}
+
+	if memProfilePath := os.Getenv("MEM_PROFILE"); memProfilePath != "" {
+		defer func() {
+			f, err := os.Create(memProfilePath)
+			if err != nil {
+				log.Printf("pulse: could not create memory profile file: %v", err)
+				return
+			}
+			defer f.Close()
+			runtime.GC()
+			if err := pprof.WriteHeapProfile(f); err != nil {
+				log.Printf("pulse: could not write memory profile: %v", err)
+				return
+			}
+			log.Printf("pulse: memory profile written to %s", memProfilePath)
+		}()
+	}
 
 	connCtx, connCancel := context.WithTimeout(context.Background(), 10*time.Second)
 	st, err := store.New(connCtx, databaseURL)
@@ -57,7 +92,14 @@ func main() {
 			wg.Add(1)
 			go func(t checker.Target) {
 				defer wg.Done()
-				checkCtx, checkCancel := context.WithTimeout(runCtx, time.Duration(checkTimeoutMs)*time.Millisecond)
+				// Deliberately NOT derived from runCtx: an in-flight check should
+				// be allowed to finish on its own timeout even after a shutdown
+				// signal arrives. Tying this to runCtx caused every shutdown to
+				// record a burst of false "context canceled" failures for targets
+				// that were actually healthy — confirmed via uptime_checks rows
+				// showing NULL status_code for ok-N/slow-N targets exactly at
+				// shutdown time. Accuracy over shutdown speed for an uptime monitor.
+				checkCtx, checkCancel := context.WithTimeout(context.Background(), time.Duration(checkTimeoutMs)*time.Millisecond)
 				defer checkCancel()
 				results <- checker.Check(checkCtx, t, client)
 			}(target)
