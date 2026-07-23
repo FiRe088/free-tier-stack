@@ -54,3 +54,32 @@ truth (uptime status), a shutdown mechanism that corrupts that record
 is worse than one that shuts down slowly. Correctness under shutdown
 needs the same scrutiny as correctness under load — "does it stop
 cleanly" is not the same question as "does it stop truthfully."
+
+## 2026-07-23 Watchdog restart loop caused 14x data duplication
+**Problem:** After a laptop restart, `docker compose ps` showed Watchdog's
+container uptime resetting every ~15-20 seconds while Postgres and Pulse
+stayed stable for a full minute. RestartCount was 10.
+**Root cause:** docker-compose.yml gave every service, including
+Watchdog, `restart: unless-stopped`. Watchdog is architected as a batch
+job — it processes files once and exits by design (this was true from
+Phase 1 onward). Under `unless-stopped`, Docker interpreted every clean
+exit as a crash to recover from, restarting it in an infinite loop. Each
+cycle re-ingested the same 500,007-line file with no deduplication on
+log_events (unlike log_alerts, which has a unique constraint from Phase
+3), inflating the table to 7.28 million rows — about 14.6x the correct
+count — before the loop was caught and stopped.
+**Fix:** Changed Watchdog's restart policy to "no", matching its actual
+execution model (run-once, on-demand or scheduled — not a daemon).
+Truncated the corrupted tables and re-ran once to confirm a clean
+500,007-row result.
+**Lesson:** A restart policy is a claim about a service's execution
+model, and it needs to match that model exactly — not just be copied
+from a neighboring service in the same compose file. This bug was
+invisible in every previous manual test (`docker run watchdog-bin`
+standalone, or foreground `docker compose up watchdog`) because those
+never exercised the `unless-stopped` policy under detached (`-d`) mode
+long enough to observe a restart cycle. It only surfaced by accident,
+via an unrelated laptop restart forcing Docker to re-evaluate container
+state — a reminder that policy-level config (restart, resource limits,
+healthchecks) needs deliberate testing under realistic conditions
+(detached, left running), not just a one-off foreground run.
