@@ -64,3 +64,29 @@ _(pending)_
   `logEventCopySource.Values()` — a per-row `[]any` slice allocation — is
   now the largest single allocator (54.37%). A pooled/reusable buffer
   would reduce this further; not implemented, noted as a known next step.
+
+## Pulse: Phase 4 — Profiling (no fix required)
+
+- **Date:** 2026-07-23
+- **Test:** 100 concurrent targets (40 ok, 15 slow up to 800ms, 15 always-
+  fail, 30 flaky), 5s check interval, 1000ms per-check timeout, ~6 rounds
+  over a 30s run, CPU + heap profiling enabled throughout.
+- **CPU profile:** Only 2.72% of wall-clock time spent on-CPU (840ms of
+  30.84s). Dominant cost was internal/runtime/syscall.Syscall6 (45.24%,
+  raw socket I/O) and runtime.futex (8.33%, goroutine scheduling) —
+  both expected overhead of 100-way concurrent HTTP I/O, not application
+  logic. No Watchdog-style single-function bottleneck exists in this
+  profile.
+- **Heap profile:** Allocations dominated by Go's own net/http client
+  internals (HTTP header parsing, socket address conversion, connection
+  deadline/pool bookkeeping) — none of Pulse's own application code
+  (checker.Check, store.InsertCheck, store.UpdateAlertState) appears in
+  the top 10 allocators.
+- **Conclusion:** Unlike Watchdog (where profiling found a genuine,
+  fixable inefficiency in the batch-insert layer), Pulse's implementation
+  has no profiling-identified bottleneck. The workload is fundamentally
+  I/O-bound by nature — 100 concurrent network round-trips per round —
+  and the profile confirms the code isn't introducing avoidable overhead
+  on top of that. Correctly recognizing "no fix needed" from profiling
+  data is itself the deliverable here, rather than manufacturing an
+  optimization the evidence doesn't support.
