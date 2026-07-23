@@ -25,7 +25,7 @@ services:
     build:
       context: ./watchdog
     container_name: ftstack-watchdog
-    restart: unless-stopped
+    restart: "no"
     depends_on:
       postgres:
         condition: service_healthy
