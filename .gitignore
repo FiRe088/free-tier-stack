@@ -21,3 +21,4 @@ watchdog/watchdog-bin
 watchdog/*.prof
 pulse/pulse-bin
 pulse/*.prof
+scripts/mockserver/mockserver

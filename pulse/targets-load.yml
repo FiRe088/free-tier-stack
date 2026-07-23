@@ -1,0 +1,201 @@
+targets:
+  - name: ok-0
+    url: http://localhost:9100/ok/0
+  - name: ok-1
+    url: http://localhost:9100/ok/1
+  - name: ok-2
+    url: http://localhost:9100/ok/2
+  - name: ok-3
+    url: http://localhost:9100/ok/3
+  - name: ok-4
+    url: http://localhost:9100/ok/4
+  - name: ok-5
+    url: http://localhost:9100/ok/5
+  - name: ok-6
+    url: http://localhost:9100/ok/6
+  - name: ok-7
+    url: http://localhost:9100/ok/7
+  - name: ok-8
+    url: http://localhost:9100/ok/8
+  - name: ok-9
+    url: http://localhost:9100/ok/9
+  - name: ok-10
+    url: http://localhost:9100/ok/10
+  - name: ok-11
+    url: http://localhost:9100/ok/11
+  - name: ok-12
+    url: http://localhost:9100/ok/12
+  - name: ok-13
+    url: http://localhost:9100/ok/13
+  - name: ok-14
+    url: http://localhost:9100/ok/14
+  - name: ok-15
+    url: http://localhost:9100/ok/15
+  - name: ok-16
+    url: http://localhost:9100/ok/16
+  - name: ok-17
+    url: http://localhost:9100/ok/17
+  - name: ok-18
+    url: http://localhost:9100/ok/18
+  - name: ok-19
+    url: http://localhost:9100/ok/19
+  - name: ok-20
+    url: http://localhost:9100/ok/20
+  - name: ok-21
+    url: http://localhost:9100/ok/21
+  - name: ok-22
+    url: http://localhost:9100/ok/22
+  - name: ok-23
+    url: http://localhost:9100/ok/23
+  - name: ok-24
+    url: http://localhost:9100/ok/24
+  - name: ok-25
+    url: http://localhost:9100/ok/25
+  - name: ok-26
+    url: http://localhost:9100/ok/26
+  - name: ok-27
+    url: http://localhost:9100/ok/27
+  - name: ok-28
+    url: http://localhost:9100/ok/28
+  - name: ok-29
+    url: http://localhost:9100/ok/29
+  - name: ok-30
+    url: http://localhost:9100/ok/30
+  - name: ok-31
+    url: http://localhost:9100/ok/31
+  - name: ok-32
+    url: http://localhost:9100/ok/32
+  - name: ok-33
+    url: http://localhost:9100/ok/33
+  - name: ok-34
+    url: http://localhost:9100/ok/34
+  - name: ok-35
+    url: http://localhost:9100/ok/35
+  - name: ok-36
+    url: http://localhost:9100/ok/36
+  - name: ok-37
+    url: http://localhost:9100/ok/37
+  - name: ok-38
+    url: http://localhost:9100/ok/38
+  - name: ok-39
+    url: http://localhost:9100/ok/39
+  - name: slow-0
+    url: http://localhost:9100/slow/0
+  - name: slow-1
+    url: http://localhost:9100/slow/1
+  - name: slow-2
+    url: http://localhost:9100/slow/2
+  - name: slow-3
+    url: http://localhost:9100/slow/3
+  - name: slow-4
+    url: http://localhost:9100/slow/4
+  - name: slow-5
+    url: http://localhost:9100/slow/5
+  - name: slow-6
+    url: http://localhost:9100/slow/6
+  - name: slow-7
+    url: http://localhost:9100/slow/7
+  - name: slow-8
+    url: http://localhost:9100/slow/8
+  - name: slow-9
+    url: http://localhost:9100/slow/9
+  - name: slow-10
+    url: http://localhost:9100/slow/10
+  - name: slow-11
+    url: http://localhost:9100/slow/11
+  - name: slow-12
+    url: http://localhost:9100/slow/12
+  - name: slow-13
+    url: http://localhost:9100/slow/13
+  - name: slow-14
+    url: http://localhost:9100/slow/14
+  - name: fail-0
+    url: http://localhost:9100/fail/0
+  - name: fail-1
+    url: http://localhost:9100/fail/1
+  - name: fail-2
+    url: http://localhost:9100/fail/2
+  - name: fail-3
+    url: http://localhost:9100/fail/3
+  - name: fail-4
+    url: http://localhost:9100/fail/4
+  - name: fail-5
+    url: http://localhost:9100/fail/5
+  - name: fail-6
+    url: http://localhost:9100/fail/6
+  - name: fail-7
+    url: http://localhost:9100/fail/7
+  - name: fail-8
+    url: http://localhost:9100/fail/8
+  - name: fail-9
+    url: http://localhost:9100/fail/9
+  - name: fail-10
+    url: http://localhost:9100/fail/10
+  - name: fail-11
+    url: http://localhost:9100/fail/11
+  - name: fail-12
+    url: http://localhost:9100/fail/12
+  - name: fail-13
+    url: http://localhost:9100/fail/13
+  - name: fail-14
+    url: http://localhost:9100/fail/14
+  - name: flaky-0
+    url: http://localhost:9100/flaky/0
+  - name: flaky-1
+    url: http://localhost:9100/flaky/1
+  - name: flaky-2
+    url: http://localhost:9100/flaky/2
+  - name: flaky-3
+    url: http://localhost:9100/flaky/3
+  - name: flaky-4
+    url: http://localhost:9100/flaky/4
+  - name: flaky-5
+    url: http://localhost:9100/flaky/5
+  - name: flaky-6
+    url: http://localhost:9100/flaky/6
+  - name: flaky-7
+    url: http://localhost:9100/flaky/7
+  - name: flaky-8
+    url: http://localhost:9100/flaky/8
+  - name: flaky-9
+    url: http://localhost:9100/flaky/9
+  - name: flaky-10
+    url: http://localhost:9100/flaky/10
+  - name: flaky-11
+    url: http://localhost:9100/flaky/11
+  - name: flaky-12
+    url: http://localhost:9100/flaky/12
+  - name: flaky-13
+    url: http://localhost:9100/flaky/13
+  - name: flaky-14
+    url: http://localhost:9100/flaky/14
+  - name: flaky-15
+    url: http://localhost:9100/flaky/15
+  - name: flaky-16
+    url: http://localhost:9100/flaky/16
+  - name: flaky-17
+    url: http://localhost:9100/flaky/17
+  - name: flaky-18
+    url: http://localhost:9100/flaky/18
+  - name: flaky-19
+    url: http://localhost:9100/flaky/19
+  - name: flaky-20
+    url: http://localhost:9100/flaky/20
+  - name: flaky-21
+    url: http://localhost:9100/flaky/21
+  - name: flaky-22
+    url: http://localhost:9100/flaky/22
+  - name: flaky-23
+    url: http://localhost:9100/flaky/23
+  - name: flaky-24
+    url: http://localhost:9100/flaky/24
+  - name: flaky-25
+    url: http://localhost:9100/flaky/25
+  - name: flaky-26
+    url: http://localhost:9100/flaky/26
+  - name: flaky-27
+    url: http://localhost:9100/flaky/27
+  - name: flaky-28
+    url: http://localhost:9100/flaky/28
+  - name: flaky-29
+    url: http://localhost:9100/flaky/29

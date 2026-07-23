@@ -1,0 +1,4 @@
+sample-logs/
+*.prof
+watchdog-bin
+.git
