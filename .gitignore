@@ -20,3 +20,4 @@ watchdog/sample-logs/flood.log
 watchdog/watchdog-bin
 watchdog/*.prof
 pulse/pulse-bin
+pulse/*.prof
