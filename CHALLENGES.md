@@ -83,3 +83,27 @@ via an unrelated laptop restart forcing Docker to re-evaluate container
 state — a reminder that policy-level config (restart, resource limits,
 healthchecks) needs deliberate testing under realistic conditions
 (detached, left running), not just a one-off foreground run.
+
+## 2026-07-23 Recurring pattern: files built and tested but never committed
+**Problem:** Third occurrence in this project of files existing on disk,
+working correctly, even tested — but never actually added to git. This
+time: both Dockerfiles, both .dockerignore files, and the entire
+mockserver load-testing tool, all from Step 14, sat uncommitted through
+an entire subsequent session (Grafana setup) before being caught via a
+routine `git status` check.
+**Root cause:** Creating a file and testing that it works is not the
+same action as committing it, and nothing in the normal workflow forces
+a check between them. Each individual step "worked" in isolation —
+Dockerfiles built successfully, containers ran — creating false
+confidence that the work was fully captured, when only the runtime
+artifacts were verified, not the version-control state.
+**Fix:** Same as before — `git status` before considering any step
+complete, not just after commands that are expected to change tracked
+files.
+**Lesson:** This is the third time this exact gap has occurred (see the
+"previously-untracked schema and challenges log" entry earlier). A
+one-off mistake is a mistake; three occurrences is a process gap. The
+actual fix going forward: treat `git status` showing untracked files as
+equally important to a build succeeding — a Dockerfile that builds a
+working image but was never committed provides zero value to anyone
+who clones the repo, which is the entire point of version control.
