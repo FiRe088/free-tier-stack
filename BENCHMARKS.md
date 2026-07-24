@@ -90,3 +90,40 @@ _(pending)_
   on top of that. Correctly recognizing "no fix needed" from profiling
   data is itself the deliverable here, rather than manufacturing an
   optimization the evidence doesn't support.
+
+## AWS EC2 Deployment: Full-stack resource usage (live, all services)
+
+- **Date:** 2026-07-24
+- **Instance:** t3.micro, eu-west-1, Ubuntu 24.04
+- **Test:** Postgres + Pulse (continuous) + Grafana (dashboard profile) all
+  running simultaneously — the full stack, not a subset.
+- **Result:**
+
+| Service    | Memory used | Limit | % of limit |
+|------------|-------------|-------|------------|
+| Grafana    | 61.6 MB     | 200MB | 30.8%      |
+| Postgres   | 25.1 MB     | 300MB | 8.4%       |
+| Pulse      | 5.9 MB      | 128MB | 4.6%       |
+
+- **System-wide:** 538MB used / 911MB total, 372MB still available with
+  all three services running concurrently.
+- **Conclusion:** The resource budget designed in Step 2 (before any code
+  existed) held up under real deployment — every service uses a fraction
+  of its allocated cap, with genuine headroom remaining on the smallest
+  AWS free-tier instance type. Watchdog (batch job, restart: "no") is
+  excluded from this snapshot since it exits after each run by design;
+  its own container never runs concurrently with the others by intent.
+
+## AWS deployment: real operational lesson — CPU credit exhaustion
+
+Building both Go binaries directly on the t3.micro (via `docker compose
+up -d --build`) exhausted the instance's CPU credit balance to 0,
+stalling the build and even new SSH connections for several minutes.
+Root cause: cumulative CPU load from `apt upgrade`, Docker installation,
+and compiling two Go binaries back-to-back exceeded the burstable
+instance's credit pool. Fix: build images on unthrottled hardware (WSL),
+export with `docker save`, transfer via `scp`, and `docker load` on the
+target instance — never compile on a CPU-constrained deployment target.
+This is the same pattern real CI/CD pipelines use (build once on capable
+hardware, ship the artifact) and is documented as its own CHALLENGES.md
+entry.
