@@ -107,3 +107,35 @@ actual fix going forward: treat `git status` showing untracked files as
 equally important to a build succeeding — a Dockerfile that builds a
 working image but was never committed provides zero value to anyone
 who clones the repo, which is the entire point of version control.
+
+## 2026-07-24 CPU credit exhaustion stalled the EC2 instance mid-deploy
+**Problem:** Running `docker compose up -d --build` directly on the
+t3.micro instance appeared to hang indefinitely — the build produced no
+output, and shortly after, even a brand-new SSH connection attempt
+stalled before completing the handshake.
+**Root cause:** t3.micro is a burstable instance type: it earns CPU
+credits at a fixed baseline rate and can spend them faster during bursts,
+but once the credit balance hits zero, the instance is throttled down to
+its baseline (~10% of a vCPU). The cumulative CPU cost of `apt upgrade`,
+installing Docker, and compiling two Go binaries back-to-back exhausted
+the credit pool entirely — confirmed via CloudWatch's CPUCreditBalance
+metric showing 0.0. At that throttle level, even SSH's handshake could
+take minutes to complete, which looked identical to a genuinely hung
+process from the outside.
+**Fix:** Rebooted the instance (preserves the public IP, unlike stop/
+start) to get a clean, responsive state, then abandoned the
+build-on-target approach entirely. Built both Go binaries into Docker
+images on WSL (unthrottled, unlimited CPU), exported them with
+`docker save | gzip`, transferred via `scp`, and loaded them on the
+instance with `docker load` — no compilation ever happens on the
+constrained target again.
+**Lesson:** Never build/compile on the actual deployment target when
+that target is a burstable, resource-constrained instance — build on
+capable hardware and ship the artifact. This is standard CI/CD practice
+for exactly this reason, not just a workaround for a slow instance:
+compiling is a bursty, unpredictable CPU cost, and a burstable instance's
+whole selling point (cheap baseline performance) is incompatible with
+unpredictable heavy compute. The distinction between "the instance is
+broken" and "the instance is correctly throttled per its pricing model"
+matters — CloudWatch's CPUCreditBalance metric is the direct way to
+tell them apart rather than guessing from symptoms alone.
