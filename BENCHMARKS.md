@@ -15,9 +15,6 @@
   pool + batched inserts targets.
 
 ## Watchdog: Phase 2 (worker pool + batching)
-_(pending)_
-
-## Watchdog: Phase 2 (worker pool + batching)
 
 - **Date:** 2026-07-21
 - **Test:** Same 10,007 lines, 4 workers, batch size 100, batch interval 500ms.
@@ -30,6 +27,35 @@ _(pending)_
   time was network wait). Phase 2 batches up to 100 rows per round-trip
   across 4 concurrent workers, reducing round-trips from 10,007 to ~101,
   and converting the workload from I/O-bound to compute-bound.
+
+## Watchdog: Phase 3 — Graceful Shutdown & Anomaly Detection
+
+- **Date:** 2026-07-21
+- **Anomaly detection test:** Ran Watchdog with `ERROR_SPIKE_THRESHOLD=2`
+  against `app.log` + a 10,000-line synthetic flood file (15% error rate).
+  Result: `processed=10007 errors=3, new_alerts=2`. Verified directly
+  against `log_alerts`: one row for `app.log` (2 errors in the
+  2026-07-21 22:14:00 window) and one for `flood.log` (2,880 errors in
+  the 23:35:00 window) — confirms the 1-minute tumbling-window detection
+  and the `ON CONFLICT` dedup constraint both work as designed.
+- **Graceful shutdown test:** Generated a 200,000-line flood file, ran the
+  compiled `watchdog-bin` binary directly (not `go run`, which doesn't
+  reliably forward signals to the child process — confirmed via a first
+  attempt that produced no cancellation and exit code 1), sent `SIGINT`
+  after 0.3s, and waited for exit.
+  - Log output: `tailer: sample-logs/flood.log: cancelled after 14394
+    lines: context canceled`, followed by `ingestion done.
+    processed=14401 errors=3`.
+  - Verified against Postgres directly: `SELECT COUNT(*) FROM
+    log_events` returned exactly `14401` — an exact match with zero rows
+    lost or double-counted, confirming in-flight batches were flushed
+    correctly before exit rather than dropped or duplicated.
+  - Exit code: `0` (clean shutdown, not a crash).
+- **Conclusion:** Both mechanisms verified against the database directly,
+  not just log output. The interrupted run processed 14,401 of 200,007
+  lines (7.2%) before shutdown completed — proof the SIGINT handler
+  actually interrupts mid-file rather than draining the whole file
+  before "gracefully" exiting.
 
 ## Watchdog: Phase 4 — Profiling-driven optimization (Batch vs COPY)
 
