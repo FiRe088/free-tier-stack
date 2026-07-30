@@ -1,3 +1,54 @@
+# Build Log: Challenges & Errors
+
+Chronological record of real problems hit during this build and how they
+were resolved. Kept deliberately raw — this is engineering-process evidence,
+not polished documentation.
+
+Format per entry:
+
+## [date] Short title
+**Problem:**
+**Root cause:**
+**Fix:**
+**Lesson:**
+
+---
+
+## 2026-07-21 WSL landed in Docker Desktop's internal distro, not Ubuntu
+**Problem:** `wsl` command dropped into `/mnt/host/c/...`, not a real Ubuntu
+home directory. `cat /etc/os-release` returned nothing.
+**Root cause:** Docker Desktop was installed and registered as the only
+WSL distro (`docker-desktop`), so plain `wsl` launched its internal utility
+VM instead of a general-purpose Linux environment. No Ubuntu distro existed.
+**Fix:** `wsl --install -d Ubuntu`, then `wsl --set-default Ubuntu`.
+**Lesson:** `wsl --list --verbose` should be the first diagnostic command
+any time WSL behavior looks wrong — don't assume the default distro is
+what you think it is.
+
+## 2026-07-21 go.mod version drift from a single go get
+**Problem:** `go mod init` produced `go 1.25.0` in go.mod despite only Go
+1.23.4 being installed locally.
+**Root cause:** `go get github.com/jackc/pgx/v5/pgxpool` pulled in pgx
+v5.10.0, which has a hard minimum requirement of Go 1.25.0. GOTOOLCHAIN=auto
+silently downloaded 1.25.x to satisfy it.
+**Fix:** Accepted 1.25.0 as the real floor (pgx requires it) and upgraded
+the base Go install to match, instead of fighting the auto-toolchain
+behavior by re-pinning to 1.23.4.
+**Lesson:** A dependency's minimum Go version is a real constraint, not
+noise — check `go.mod`'s `go` line output after every `go get`, not just
+after `go mod init`.
+
+## 2026-07-21 Go module path didn't match actual repo layout
+**Problem:** `go mod init github.com/fire/watchdog` used a placeholder
+username and assumed watchdog was its own top-level repo.
+**Root cause:** Didn't confirm real GitHub username before initializing
+the module, and didn't account for the monorepo layout (one repo,
+multiple Go modules as subdirectories).
+**Fix:** `go mod edit -module github.com/FiRe088/free-tier-stack/watchdog`
+before enough code existed to make the fix expensive.
+**Lesson:** Confirm module path against actual intended repo structure
+before writing more than one file — retrofitting import paths across many
+files is pure toil with zero engineering value.
 
 ## 2026-07-21 Missing file caused false "add dependency" error
 **Problem:** `go build` suggested `go get` for an internal package
@@ -10,6 +61,28 @@ the heredoc to create it.
 **Lesson:** Always verify a file was written (`cat` or `ls`) immediately
 after creating it, before building on top of it — don't trust that a
 command ran just because the terminal moved to the next prompt.
+
+## 2026-07-21 `go run` doesn't forward signals to the compiled binary
+**Problem:** Testing Watchdog's graceful-shutdown handling by sending
+`kill -SIGINT` to a `go run ./cmd/watchdog` process produced no
+cancellation at all — the run processed the full 200,000-line test file
+to completion, printed no "shutdown signal received" log line, and
+`go run` itself exited with status 1.
+**Root cause:** `go run` compiles the program and executes it as a
+*child* process of the `go run` wrapper. Sending a signal to the wrapper
+does not reliably propagate it to the actual running binary — the
+signal hit `go run` itself, not the program's own `signal.NotifyContext`
+handler, so the child process kept running untouched while the parent
+reported a misleading non-zero exit code.
+**Fix:** Built the real binary (`go build -o watchdog-bin
+./cmd/watchdog`) and sent the signal directly to that process instead.
+The identical shutdown logic then worked exactly as designed: cancelled
+mid-file after 14,394 of 200,000 lines, flushed pending batches, exited
+cleanly with code 0 — verified against the database, not just the logs.
+**Lesson:** Never use `go run` to test signal handling, timeouts, or any
+process-lifecycle behavior — it adds a process boundary that changes the
+behavior under test. Always test the real compiled artifact for anything
+involving signals, exit codes, or OS-level process behavior.
 
 ## 2026-07-22 Alert suppressed on the exact case it mattered most
 **Problem:** Pulse's uptime_alert_state table showed correct down/up
