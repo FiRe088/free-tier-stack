@@ -22,3 +22,4 @@ watchdog/*.prof
 pulse/pulse-bin
 pulse/*.prof
 scripts/mockserver/mockserver
+scripts/logflood/logflood
