@@ -2,9 +2,13 @@ package store
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/FiRe088/free-tier-stack/pulse/internal/alert"
 )
 
 // CheckRecord mirrors a row in uptime_checks.
@@ -56,13 +60,12 @@ type AlertTransition struct {
 	ToState    string
 }
 
-// UpdateAlertState reads the target's current alert state, updates the
-// consecutive-failure counter, and writes a new state only on an actual
-// transition (up->down or down->up) or on first-ever sighting of a target.
-// This is the mechanism that keeps uptime_alert_state writes rare relative
-// to uptime_checks writes — one row per target, updated only on change,
-// per the original schema design (Step 4 comment: "only written on state
-// change, not every check").
+// UpdateAlertState reads the target's current alert state under a row lock,
+// applies one check result via alert.Next, and writes the result back. It
+// returns a non-nil transition only when the state actually changed.
+//
+// The decision itself lives in the alert package as a pure function, so it
+// can be tested without a database. This method only does the I/O.
 //
 // downThreshold is how many consecutive failures are required before a
 // target is considered "down" (avoids flapping on a single blip).
@@ -83,29 +86,18 @@ func (s *Store) UpdateAlertState(ctx context.Context, targetName string, success
 		FOR UPDATE
 	`
 	err = tx.QueryRow(ctx, selectQ, targetName).Scan(&currentState, &consecutiveFails)
-
-	if err != nil {
-		// No row yet for this target — first time we've seen it.
-		currentState = "unknown"
-		consecutiveFails = 0
+	switch {
+	case errors.Is(err, pgx.ErrNoRows):
+		// First time we've seen this target.
+		currentState, consecutiveFails = string(alert.Unknown), 0
+	case err != nil:
+		// Previously every error was treated as "no row", so a dropped
+		// connection or timeout silently reset the target to unknown and
+		// could fire a bogus alert. Only ErrNoRows means "new target".
+		return nil, fmt.Errorf("store: reading alert state for %s: %w", targetName, err)
 	}
 
-	newConsecutiveFails := consecutiveFails
-	newState := currentState
-
-	if success {
-		newConsecutiveFails = 0
-		if currentState != "up" {
-			newState = "up"
-		}
-	} else {
-		newConsecutiveFails = consecutiveFails + 1
-		if newConsecutiveFails >= downThreshold && currentState != "down" {
-			newState = "down"
-		}
-	}
-
-	stateChanged := newState != currentState
+	d := alert.Next(alert.State(currentState), consecutiveFails, success, downThreshold)
 
 	const upsertQ = `
 		INSERT INTO uptime_alert_state (target_name, current_state, consecutive_fails, last_transition_at)
@@ -119,8 +111,7 @@ func (s *Store) UpdateAlertState(ctx context.Context, targetName string, success
 		        ELSE uptime_alert_state.last_transition_at
 		    END
 	`
-	_, err = tx.Exec(ctx, upsertQ, targetName, newState, newConsecutiveFails)
-	if err != nil {
+	if _, err := tx.Exec(ctx, upsertQ, targetName, string(d.State), d.ConsecutiveFails); err != nil {
 		return nil, fmt.Errorf("store: upserting alert state for %s: %w", targetName, err)
 	}
 
@@ -128,13 +119,12 @@ func (s *Store) UpdateAlertState(ctx context.Context, targetName string, success
 		return nil, fmt.Errorf("store: commit tx: %w", err)
 	}
 
-	if stateChanged {
-		return &AlertTransition{
-			TargetName: targetName,
-			FromState:  currentState,
-			ToState:    newState,
-		}, nil
+	if !d.Transitioned {
+		return nil, nil
 	}
-	return nil, nil
+	return &AlertTransition{
+		TargetName: targetName,
+		FromState:  currentState,
+		ToState:    string(d.State),
+	}, nil
 }
-

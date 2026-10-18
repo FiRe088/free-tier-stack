@@ -86,25 +86,9 @@ func main() {
 
 	results := make(chan checker.CheckResult, len(cfg.Targets))
 
+	checkTimeout := time.Duration(checkTimeoutMs) * time.Millisecond
 	runOneRound := func() {
-		var wg sync.WaitGroup
-		for _, target := range cfg.Targets {
-			wg.Add(1)
-			go func(t checker.Target) {
-				defer wg.Done()
-				// Deliberately NOT derived from runCtx: an in-flight check should
-				// be allowed to finish on its own timeout even after a shutdown
-				// signal arrives. Tying this to runCtx caused every shutdown to
-				// record a burst of false "context canceled" failures for targets
-				// that were actually healthy — confirmed via uptime_checks rows
-				// showing NULL status_code for ok-N/slow-N targets exactly at
-				// shutdown time. Accuracy over shutdown speed for an uptime monitor.
-				checkCtx, checkCancel := context.WithTimeout(context.Background(), time.Duration(checkTimeoutMs)*time.Millisecond)
-				defer checkCancel()
-				results <- checker.Check(checkCtx, t, client)
-			}(target)
-		}
-		wg.Wait()
+		checker.RunRound(runCtx, cfg.Targets, client, checkTimeout, results)
 	}
 
 	// Single writer goroutine consumes results, so Postgres writes for
