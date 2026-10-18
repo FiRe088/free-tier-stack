@@ -1,0 +1,43 @@
+# Save as .github/workflows/ci.yml
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        service: [watchdog, pulse]
+    defaults:
+      run:
+        working-directory: ${{ matrix.service }}
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: ftstack
+          POSTGRES_PASSWORD: ci_password
+          POSTGRES_DB: ftstack
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U ftstack -d ftstack"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      TEST_DATABASE_URL: postgres://ftstack:ci_password@localhost:5432/ftstack?sslmode=disable
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: ${{ matrix.service }}/go.mod
+          cache-dependency-path: ${{ matrix.service }}/go.sum
+      - name: Apply schema
+        working-directory: .
+        run: for f in db/init/*.sql; do psql "$TEST_DATABASE_URL" -f "$f"; done
+      - run: go vet ./...
+      - run: go test -race -count=1 ./...
+      - name: Build image
+        run: docker build -t ftstack-${{ matrix.service }}:ci .
