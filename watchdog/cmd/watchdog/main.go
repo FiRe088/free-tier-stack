@@ -10,29 +10,30 @@ import (
 	"runtime/pprof"
 	"strconv"
 	"sync"
-	"sync/atomic"
 	"syscall"
 	"time"
 
-	"github.com/FiRe088/free-tier-stack/watchdog/internal/parser"
+	"github.com/FiRe088/free-tier-stack/watchdog/internal/ingest"
 	"github.com/FiRe088/free-tier-stack/watchdog/internal/store"
-	"github.com/FiRe088/free-tier-stack/watchdog/internal/tailer"
 )
 
 func main() {
 	databaseURL := requireEnv("DATABASE_URL")
 	logSourceDir := requireEnv("LOG_SOURCE_DIR")
-	workerPoolSize := envIntDefault("WORKER_POOL_SIZE", 4)
-	batchSize := envIntDefault("BATCH_SIZE", 100)
+	follow := envBoolDefault("FOLLOW", false)
+	maxConcurrentFiles := envIntDefault("WORKER_POOL_SIZE", 4) // batch mode only; follow mode runs every file
+	batchSize := envIntDefault("BATCH_SIZE", 2000)             // measured: 2000 matches the old 4-worker throughput with one ordered pipeline
 	batchIntervalMs := envIntDefault("BATCH_INTERVAL_MS", 500)
+	pollIntervalMs := envIntDefault("POLL_INTERVAL_MS", 250)
+	discoverIntervalSec := envIntDefault("DISCOVER_INTERVAL_SEC", 5)
+	anomalyIntervalSec := envIntDefault("ANOMALY_INTERVAL_SEC", 60)
 	errorThreshold := envIntDefault("ERROR_SPIKE_THRESHOLD", 5)
 
-	// Phase 4b: choose insert strategy for A/B benchmarking.
-	//   batch (default) -> InsertLogEventsBatch, pgx extended-query batch
-	//   copy            -> InsertLogEventsCopy, Postgres COPY protocol
+	// copy (default): Postgres COPY protocol, ~1.75x faster (BENCHMARKS.md Phase 4)
+	// batch:          pipelined INSERTs, kept for A/B comparison
 	insertStrategy := os.Getenv("INSERT_STRATEGY")
 	if insertStrategy == "" {
-		insertStrategy = "batch"
+		insertStrategy = "copy"
 	}
 	if insertStrategy != "batch" && insertStrategy != "copy" {
 		log.Fatalf("watchdog: invalid INSERT_STRATEGY %q, must be 'batch' or 'copy'", insertStrategy)
@@ -73,130 +74,162 @@ func main() {
 	defer stop()
 
 	connCtx, connCancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer connCancel()
-
 	st, err := store.New(connCtx, databaseURL)
+	connCancel()
 	if err != nil {
 		log.Fatalf("watchdog: failed to connect to store: %v", err)
 	}
 	defer st.Close()
 
-	log.Printf("watchdog: connected to database (workers=%d batch_size=%d batch_interval=%dms error_threshold=%d insert_strategy=%s)",
-		workerPoolSize, batchSize, batchIntervalMs, errorThreshold, insertStrategy)
+	committer := store.OffsetCommitter{Store: st, UseCopy: insertStrategy == "copy"}
+	cfg := ingest.Config{
+		Follow:        follow,
+		PollInterval:  time.Duration(pollIntervalMs) * time.Millisecond,
+		BatchSize:     batchSize,
+		FlushInterval: time.Duration(batchIntervalMs) * time.Millisecond,
+	}
+	var stats ingest.Stats
 
-	type rawLine struct {
-		source string
-		text   string
+	mode := "batch"
+	if follow {
+		mode = "follow"
+	}
+	log.Printf("watchdog: connected (mode=%s batch_size=%d batch_interval=%dms error_threshold=%d insert_strategy=%s)",
+		mode, batchSize, batchIntervalMs, errorThreshold, insertStrategy)
+
+	runFile := func(path string) {
+		source := filepath.Base(path)
+		log.Printf("watchdog: ingesting %s", path)
+		if err := ingest.RunFile(runCtx, committer, path, source, cfg, &stats); err != nil {
+			log.Printf("watchdog: %s: %v", source, err)
+		}
 	}
 
-	lines := make(chan rawLine, workerPoolSize*batchSize)
+	detect := func(since time.Time) {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		res, err := st.DetectAndRecordErrorSpikes(ctx, errorThreshold, since)
+		if err != nil {
+			log.Printf("watchdog: anomaly detection failed: %v", err)
+			return
+		}
+		if res.AlertsRecorded > 0 {
+			log.Printf("watchdog: anomaly detection: new_alerts=%d", res.AlertsRecorded)
+		}
+	}
 
-	var totalProcessed int64
-	var totalErrors int64
+	var wg sync.WaitGroup
+	start := time.Now()
 
-	var workerWg sync.WaitGroup
-	for w := 0; w < workerPoolSize; w++ {
-		workerWg.Add(1)
-		go func(workerID int) {
-			defer workerWg.Done()
+	if !follow {
+		// Batch mode: ingest what's there, run detection once, exit. Safe to
+		// re-run: offsets mean already-ingested lines are skipped.
+		files, err := listLogFiles(logSourceDir)
+		if err != nil {
+			log.Fatalf("watchdog: %v", err)
+		}
+		sem := make(chan struct{}, max(1, maxConcurrentFiles))
+		for _, path := range files {
+			wg.Add(1)
+			sem <- struct{}{}
+			go func(p string) {
+				defer wg.Done()
+				defer func() { <-sem }()
+				runFile(p)
+			}(path)
+		}
+		wg.Wait()
+		logStats(&stats, time.Since(start))
+		detect(time.Time{})
+		return
+	}
 
-			batch := make([]store.LogEvent, 0, batchSize)
-			ticker := time.NewTicker(time.Duration(batchIntervalMs) * time.Millisecond)
-			defer ticker.Stop()
-
-			flush := func() {
-				if len(batch) == 0 {
-					return
-				}
-				bctx, bcancel := context.WithTimeout(context.Background(), 5*time.Second)
-
-				var insertErr error
-				if insertStrategy == "copy" {
-					insertErr = st.InsertLogEventsCopy(bctx, batch)
-				} else {
-					insertErr = st.InsertLogEventsBatch(bctx, batch)
-				}
-
-				if insertErr != nil {
-					log.Printf("watchdog: worker %d: %s insert failed (%d events lost): %v",
-						workerID, insertStrategy, len(batch), insertErr)
-					atomic.AddInt64(&totalErrors, int64(len(batch)))
-				} else {
-					atomic.AddInt64(&totalProcessed, int64(len(batch)))
-				}
-				bcancel()
-				batch = batch[:0]
+	// Follow mode: a long-running daemon. Pick up new files as they appear,
+	// run anomaly detection periodically on newly ingested data.
+	running := map[string]bool{}
+	discover := func() {
+		files, err := listLogFiles(logSourceDir)
+		if err != nil {
+			log.Printf("watchdog: %v", err)
+			return
+		}
+		for _, path := range files {
+			if running[path] {
+				continue
 			}
-
-			for {
-				select {
-				case rl, ok := <-lines:
-					if !ok {
-						flush()
-						return
-					}
-					event, perr := parser.ParseLine(rl.source, rl.text)
-					if perr != nil {
-						log.Printf("watchdog: worker %d: parse error: %v", workerID, perr)
-						atomic.AddInt64(&totalErrors, 1)
-						continue
-					}
-					batch = append(batch, event)
-					if len(batch) >= batchSize {
-						flush()
-					}
-				case <-ticker.C:
-					flush()
-				}
-			}
-		}(w)
+			running[path] = true
+			wg.Add(1)
+			go func(p string) {
+				defer wg.Done()
+				runFile(p)
+			}(path)
+		}
 	}
+	discover()
 
-	entries, err := os.ReadDir(logSourceDir)
-	if err != nil {
-		log.Fatalf("watchdog: failed to read log source dir %s: %v", logSourceDir, err)
-	}
+	discoverTicker := time.NewTicker(time.Duration(discoverIntervalSec) * time.Second)
+	defer discoverTicker.Stop()
+	anomalyTicker := time.NewTicker(time.Duration(anomalyIntervalSec) * time.Second)
+	defer anomalyTicker.Stop()
+	lastDetect := time.Time{} // first pass covers everything already stored
 
-readLoop:
-	for _, entry := range entries {
+loop:
+	for {
 		select {
 		case <-runCtx.Done():
-			log.Printf("watchdog: shutdown signal received, stopping before %s", entry.Name())
-			break readLoop
-		default:
-		}
-
-		if entry.IsDir() || filepath.Ext(entry.Name()) != ".log" {
-			continue
-		}
-		path := filepath.Join(logSourceDir, entry.Name())
-		source := entry.Name()
-		log.Printf("watchdog: processing %s", path)
-
-		errs := tailer.ReadLines(runCtx, path, func(line string) error {
-			lines <- rawLine{source: source, text: line}
-			return nil
-		})
-		for _, e := range errs {
-			log.Printf("watchdog: reader error: %v", e)
+			log.Printf("watchdog: shutdown signal received, flushing")
+			break loop
+		case <-discoverTicker.C:
+			discover()
+		case <-anomalyTicker.C:
+			// Small overlap so rows committed just before the previous pass
+			// started are never skipped. Re-checking a window is harmless:
+			// alerts are deduplicated by a unique constraint.
+			now := time.Now()
+			detect(lastDetect.Add(-time.Minute))
+			lastDetect = now
 		}
 	}
 
-	close(lines)
-	workerWg.Wait()
+	wg.Wait() // every file pipeline flushes and commits what it has read
+	detect(lastDetect.Add(-time.Minute))
+	logStats(&stats, time.Since(start))
+}
 
-	log.Printf("watchdog: ingestion done. processed=%d errors=%d",
-		atomic.LoadInt64(&totalProcessed), atomic.LoadInt64(&totalErrors))
-
-	anomalyCtx, anomalyCancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer anomalyCancel()
-
-	result, err := st.DetectAndRecordErrorSpikes(anomalyCtx, errorThreshold)
+func listLogFiles(dir string) ([]string, error) {
+	entries, err := os.ReadDir(dir)
 	if err != nil {
-		log.Printf("watchdog: anomaly detection failed: %v", err)
-	} else {
-		log.Printf("watchdog: anomaly detection done. new_alerts=%d", result.AlertsRecorded)
+		return nil, err
 	}
+	var files []string
+	for _, e := range entries {
+		if !e.IsDir() && filepath.Ext(e.Name()) == ".log" {
+			files = append(files, filepath.Join(dir, e.Name()))
+		}
+	}
+	return files, nil
+}
+
+func logStats(s *ingest.Stats, elapsed time.Duration) {
+	inserted := s.Inserted.Load()
+	rate := 0.0
+	if secs := elapsed.Seconds(); secs > 0 {
+		rate = float64(inserted) / secs
+	}
+	log.Printf("watchdog: ingestion done. lines=%d inserted=%d parse_errors=%d commit_retries=%d elapsed=%s (%.0f lines/sec)",
+		s.Lines.Load(), inserted, s.ParseErrors.Load(), s.CommitFails.Load(), elapsed.Round(time.Millisecond), rate)
+}
+
+func envBoolDefault(key string, def bool) bool {
+	v := os.Getenv(key)
+	if v == "" {
+		return def
+	}
+	b, err := strconv.ParseBool(v)
+	if err != nil {
+		log.Fatalf("watchdog: invalid boolean for %s: %q", key, v)
+	}
+	return b
 }
 
 func requireEnv(key string) string {

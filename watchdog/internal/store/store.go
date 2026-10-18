@@ -109,16 +109,29 @@ type AnomalyResult struct {
 // 10s of the next) would be split across two windows and might not
 // trigger either one individually. A sliding-window implementation is
 // a legitimate Phase 4+ improvement, not done here.
-func (s *Store) DetectAndRecordErrorSpikes(ctx context.Context, threshold int) (AnomalyResult, error) {
+func (s *Store) DetectAndRecordErrorSpikes(ctx context.Context, threshold int, since time.Time) (AnomalyResult, error) {
+	// Only windows that received an ERROR row ingested at or after since are
+	// re-examined, but each of those windows is counted in full. A zero since
+	// scans everything (batch mode). In follow mode this keeps each periodic
+	// run proportional to new data, not to the size of the table.
 	const selectQ = `
-		SELECT source, date_trunc('minute', occurred_at) AS window_start, COUNT(*) AS error_count
-		FROM log_events
-		WHERE level = 'ERROR'
-		GROUP BY source, window_start
+		WITH touched AS (
+			SELECT DISTINCT source, date_trunc('minute', occurred_at) AS window_start
+			FROM log_events
+			WHERE level = 'ERROR' AND ingested_at >= $2
+		)
+		SELECT e.source, t.window_start, COUNT(*) AS error_count
+		FROM log_events e
+		JOIN touched t
+		  ON e.source = t.source
+		 AND e.occurred_at >= t.window_start
+		 AND e.occurred_at <  t.window_start + interval '1 minute'
+		WHERE e.level = 'ERROR'
+		GROUP BY e.source, t.window_start
 		HAVING COUNT(*) >= $1
 	`
 
-	rows, err := s.pool.Query(ctx, selectQ, threshold)
+	rows, err := s.pool.Query(ctx, selectQ, threshold, since)
 	if err != nil {
 		return AnomalyResult{}, fmt.Errorf("store: detecting error spikes: %w", err)
 	}

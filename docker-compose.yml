@@ -25,16 +25,19 @@ services:
     build:
       context: ./watchdog
     container_name: ftstack-watchdog
-    restart: "no"
+    # Safe to restart now: offsets are committed with the rows, so a restart
+    # resumes where it left off instead of re-ingesting (CHALLENGES.md 2026-07-23).
+    restart: unless-stopped
     depends_on:
       postgres:
         condition: service_healthy
     environment:
       DATABASE_URL: postgres://ftstack:${POSTGRES_PASSWORD:-changeme_local_dev}@postgres:5432/ftstack?sslmode=disable
       LOG_SOURCE_DIR: /var/log/watched
-      WORKER_POOL_SIZE: 4
-      BATCH_SIZE: 100
+      FOLLOW: "true"
+      BATCH_SIZE: 2000
       BATCH_INTERVAL_MS: 500
+      ANOMALY_INTERVAL_SEC: 60
     volumes:
       - ./watchdog/sample-logs:/var/log/watched:ro
     mem_limit: 128m
