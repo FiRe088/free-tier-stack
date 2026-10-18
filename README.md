@@ -26,7 +26,7 @@ flowchart LR
     W --> DB[(PostgreSQL 16)]
     P --> DB
     DB --> G[Grafana dashboard]
-    subgraph EC2 t3.micro, Docker Compose
+    subgraph ec2["EC2 t3.micro · Docker Compose"]
       W
       P
       DB
